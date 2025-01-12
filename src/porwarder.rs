@@ -1,7 +1,18 @@
 use aws_config::BehaviorVersion;
 use aws_runtime::env_config;
 use color_eyre::{eyre::eyre, Result};
-use std::process::Command;
+use std::{
+    fmt::{Display, Formatter},
+    process::Command,
+};
+
+#[derive(Clone)]
+pub enum DestinationTypes {
+    ApplicationLoadBalancer(u32, u32),
+    Postgresql(u32, u32),
+    Redis(u32, u32),
+    Valkey(u32, u32),
+}
 
 pub trait BuilderState {}
 
@@ -13,7 +24,7 @@ pub trait StringListSelector {
 pub struct PortForwarder {
     profile_name: Option<String>,
     instance_id: Option<String>,
-    destination_type: Option<String>,
+    destination_type: Option<DestinationTypes>,
     host_name: Option<String>,
     host_port: Option<String>,
     local_port: Option<String>,
@@ -39,6 +50,24 @@ impl BuilderState for DestinationType {}
 impl BuilderState for Destination {}
 impl BuilderState for Ready {}
 
+impl Display for DestinationTypes {
+    fn fmt(&self, f: &mut Formatter) -> std::result::Result<(), std::fmt::Error> {
+        match self {
+            DestinationTypes::ApplicationLoadBalancer(sport, dport) => {
+                write!(f, "ApplicationLoadBalancer({}, {})", sport, dport)
+            }
+            DestinationTypes::Postgresql(sport, dport) => {
+                write!(f, "Postgresql({}, {})", sport, dport)
+            }
+            DestinationTypes::Redis(sport, dport) => {
+                write!(f, "Redis({}, {})", sport, dport)
+            }
+            DestinationTypes::Valkey(sport, dport) => {
+                write!(f, "Valkey({}, {})", sport, dport)
+            }
+        }
+    }
+}
 impl PortForwarderBuilder<Start> {
     pub fn setup(self) -> Result<PortForwarderBuilder<Profile>> {
         Command::new("aws").arg("--version").output().map_err(|_| {
@@ -146,17 +175,21 @@ impl PortForwarderBuilder<Instance> {
 impl PortForwarderBuilder<DestinationType> {
     pub fn destination_type(mut self) -> Result<PortForwarderBuilder<Destination>> {
         let destination_types = vec![
-            "Application Load Balancer".to_string(),
-            "Redis".to_string(),
-            "Valkey".to_string(),
-            "Postgresql".to_string(),
+            DestinationTypes::ApplicationLoadBalancer(443, 443),
+            DestinationTypes::Redis(6379, 6379),
+            DestinationTypes::Valkey(6379, 6379),
+            DestinationTypes::Postgresql(5432, 5432),
         ];
 
-        let (_, dtype) = self
-            .selector
-            .select("Select Destination Type".into(), destination_types)?;
+        let (idx, _) = self.selector.select(
+            "Select Destination Type".into(),
+            destination_types
+                .iter()
+                .map(|dtype| dtype.to_string())
+                .collect(),
+        )?;
 
-        self.port_forwarder.destination_type = Some(dtype);
+        self.port_forwarder.destination_type = destination_types.get(idx).cloned();
         Ok(PortForwarderBuilder {
             port_forwarder: self.port_forwarder,
             selector: self.selector,
@@ -167,7 +200,25 @@ impl PortForwarderBuilder<DestinationType> {
 
 impl PortForwarderBuilder<Destination> {
     pub fn destination(mut self) -> Result<PortForwarderBuilder<Ready>> {
-        let destinations = vec!["123".to_string(), "124".to_string(), "125".to_string()];
+        let destinations = match self
+            .port_forwarder
+            .destination_type
+            .clone()
+            .ok_or(eyre!("destination type is empty"))?
+        {
+            DestinationTypes::ApplicationLoadBalancer(_, _) => {
+                vec!["123".to_string()]
+            }
+            DestinationTypes::Postgresql(_, _) => {
+                vec!["123".to_string()]
+            }
+            DestinationTypes::Redis(_, _) => {
+                vec!["123".to_string()]
+            }
+            DestinationTypes::Valkey(_, _) => {
+                vec!["123".to_string()]
+            }
+        };
 
         let (_, host_name) = self.selector.select("Select Host".into(), destinations)?;
         self.port_forwarder.host_name = Some(host_name);
