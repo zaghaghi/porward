@@ -1,7 +1,7 @@
 [package]
 name = "porward"
 version = "0.1.0"
-authors = ["HamZag <hamed.zaghaghi@gmail.com>"]
+authors = ["Hamed Zaghaghi <hamed.zaghaghi@gmail.com>"]
 license = "MIT"
 edition = "2021"
 
