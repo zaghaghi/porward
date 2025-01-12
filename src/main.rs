@@ -10,8 +10,10 @@ async fn run() -> color_eyre::Result<()> {
     let selector = Box::new(TUIStringListSelector::inline_view(6));
     let result = PortForwarder::builder(selector)
         .setup()?
-        .profile()?
-        .instance()?
+        .profile()
+        .await?
+        .instance()
+        .await?
         .destination_type()?
         .destination()?
         .build()?

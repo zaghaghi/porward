@@ -1,4 +1,5 @@
 use crate::porwarder::StringListSelector;
+use color_eyre::{eyre::eyre, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
     style::{Modifier, Style},
@@ -24,37 +25,35 @@ impl TUIStringListSelector {
 }
 
 impl StringListSelector for TUIStringListSelector {
-    fn select(&mut self, title: String, options: Vec<String>) -> Option<(usize, String)> {
-        if options.len() == 0 {
-            return None;
+    fn select(&mut self, title: String, options: Vec<String>) -> Result<(usize, String)> {
+        if options.is_empty() {
+            return Err(eyre!("No options to select from for '{}'", title));
         }
         let mut index = 0;
         let mut selected: Option<String> = None;
         while selected.is_none() {
             self.state = self.state.clone().with_selected(Some(index));
-            self.terminal
-                .draw(|frame| {
-                    let area = frame.area();
+            self.terminal.draw(|frame| {
+                let area = frame.area();
 
-                    let items: Vec<_> = options
-                        .iter()
-                        .enumerate()
-                        .map(|(idx, item)| ListItem::from(format!("{}. {}", idx + 1, item)))
-                        .collect();
-                    let list = List::new(items)
-                        .block(
-                            Block::default().borders(Borders::ALL).title(
-                                Line::from(format!("{} [{}/{}]", title, index + 1, options.len()))
-                                    .left_aligned(),
-                            ),
-                        )
-                        .highlight_symbol("〉")
-                        .highlight_spacing(HighlightSpacing::Always)
-                        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
-                    frame.render_stateful_widget(list, area, &mut self.state);
-                })
-                .ok()?;
-            match event::read().ok()? {
+                let items: Vec<_> = options
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, item)| ListItem::from(format!("{}. {}", idx + 1, item)))
+                    .collect();
+                let list = List::new(items)
+                    .block(
+                        Block::default().borders(Borders::ALL).title(
+                            Line::from(format!("{} [{}/{}]", title, index + 1, options.len()))
+                                .left_aligned(),
+                        ),
+                    )
+                    .highlight_symbol("〉")
+                    .highlight_spacing(HighlightSpacing::Always)
+                    .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+                frame.render_stateful_widget(list, area, &mut self.state);
+            })?;
+            match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Enter => {
                         selected = options.get(index).cloned();
@@ -68,18 +67,16 @@ impl StringListSelector for TUIStringListSelector {
                         index %= options.len();
                     }
                     KeyCode::Esc => {
-                        return None;
+                        return Err(eyre!("User canceled selection"));
                     }
                     _ => {}
                 },
                 _ => {}
             }
         }
-        self.terminal
-            .draw(|frame| {
-                frame.render_widget(Block::new(), frame.area());
-            })
-            .ok()?;
-        Some((index, selected.unwrap()))
+        self.terminal.draw(|frame| {
+            frame.render_widget(Block::new(), frame.area());
+        })?;
+        Ok((index, selected.unwrap()))
     }
 }
