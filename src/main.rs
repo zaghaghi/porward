@@ -4,7 +4,7 @@ use selector::TUIStringListSelector;
 pub mod porwarder;
 pub mod selector;
 
-fn main() -> color_eyre::Result<()> {
+async fn run() -> color_eyre::Result<()> {
     color_eyre::install()?;
 
     let selector = Box::new(TUIStringListSelector::inline_view(6));
@@ -18,4 +18,13 @@ fn main() -> color_eyre::Result<()> {
         .run();
     ratatui::restore();
     result
+}
+
+#[tokio::main]
+async fn main() -> color_eyre::Result<()> {
+    if let Err(e) = run().await {
+        ratatui::restore();
+        eprintln!("{}", e);
+    }
+    Ok(())
 }

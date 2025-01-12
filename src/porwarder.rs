@@ -1,3 +1,4 @@
+use std::process::Command;
 use color_eyre::{eyre::eyre, Result};
 
 pub trait BuilderState {}
@@ -38,7 +39,18 @@ impl BuilderState for Ready {}
 
 impl PortForwarderBuilder<Start> {
     pub fn setup(self) -> Result<PortForwarderBuilder<Profile>> {
-        // TODO: check for aws cli and session manager plugin
+        Command::new("aws")
+            .arg("--version")
+            .output()
+            .map_err(|_| {
+                eyre!("aws cli is not installed. Please install it before running this program.")
+            })?;
+        Command::new("session-manager-plugin")
+            .arg("--version")
+            .output()
+            .map_err(|_| {
+                eyre!("session-manager-plugin is not installed. Please install it before running this program.")
+            })?;
         Ok(PortForwarderBuilder {
             port_forwarder: self.port_forwarder,
             selector: self.selector,
