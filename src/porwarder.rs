@@ -3,15 +3,15 @@ use aws_runtime::env_config;
 use color_eyre::{eyre::eyre, Result};
 use std::{
     fmt::{Display, Formatter},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 #[derive(Clone)]
-pub enum DestinationTypes {
-    ApplicationLoadBalancer(u32, u32),
-    Postgresql(u32, u32),
-    Redis(u32, u32),
-    Valkey(u32, u32),
+pub enum Service {
+    ApplicationLoadBalancer,
+    Postgresql,
+    Redis,
+    Valkey,
 }
 
 pub trait BuilderState {}
@@ -24,10 +24,11 @@ pub trait StringListSelector {
 pub struct PortForwarder {
     profile_name: Option<String>,
     instance_id: Option<String>,
-    destination_type: Option<DestinationTypes>,
+    service: Option<Service>,
     host_name: Option<String>,
     host_port: Option<String>,
     local_port: Option<String>,
+    read_only: bool,
 }
 
 pub struct PortForwarderBuilder<S: BuilderState = Start> {
@@ -50,24 +51,36 @@ impl BuilderState for DestinationType {}
 impl BuilderState for Destination {}
 impl BuilderState for Ready {}
 
-impl Display for DestinationTypes {
+impl Display for Service {
     fn fmt(&self, f: &mut Formatter) -> std::result::Result<(), std::fmt::Error> {
         match self {
-            DestinationTypes::ApplicationLoadBalancer(sport, dport) => {
-                write!(f, "ApplicationLoadBalancer({}, {})", sport, dport)
+            Service::ApplicationLoadBalancer => {
+                write!(f, "ApplicationLoadBalancer")
             }
-            DestinationTypes::Postgresql(sport, dport) => {
-                write!(f, "Postgresql({}, {})", sport, dport)
+            Service::Postgresql => {
+                write!(f, "Postgresql")
             }
-            DestinationTypes::Redis(sport, dport) => {
-                write!(f, "Redis({}, {})", sport, dport)
+            Service::Redis => {
+                write!(f, "Redis")
             }
-            DestinationTypes::Valkey(sport, dport) => {
-                write!(f, "Valkey({}, {})", sport, dport)
+            Service::Valkey => {
+                write!(f, "Valkey")
             }
         }
     }
 }
+
+impl Service {
+    fn default_port(&self) -> u16 {
+        match self {
+            Service::ApplicationLoadBalancer => 443,
+            Service::Postgresql => 5432,
+            Service::Redis => 6379,
+            Service::Valkey => 6379,
+        }
+    }
+}
+
 impl PortForwarderBuilder<Start> {
     pub fn setup(self) -> Result<PortForwarderBuilder<Profile>> {
         Command::new("aws").arg("--version").output().map_err(|_| {
@@ -117,7 +130,7 @@ impl PortForwarderBuilder<Instance> {
         let profile_name = self
             .port_forwarder
             .profile_name
-            .clone()
+            .as_ref()
             .ok_or(eyre!("profile name is not set"))?;
         let config = aws_config::defaults(BehaviorVersion::latest())
             .profile_name(profile_name)
@@ -174,22 +187,32 @@ impl PortForwarderBuilder<Instance> {
 
 impl PortForwarderBuilder<DestinationType> {
     pub fn destination_type(mut self) -> Result<PortForwarderBuilder<Destination>> {
-        let destination_types = vec![
-            DestinationTypes::ApplicationLoadBalancer(443, 443),
-            DestinationTypes::Redis(6379, 6379),
-            DestinationTypes::Valkey(6379, 6379),
-            DestinationTypes::Postgresql(5432, 5432),
+        let services = [
+            Service::ApplicationLoadBalancer,
+            Service::Redis,
+            Service::Valkey,
+            Service::Postgresql,
         ];
 
         let (idx, _) = self.selector.select(
             "Select Destination Type".into(),
-            destination_types
-                .iter()
-                .map(|dtype| dtype.to_string())
-                .collect(),
+            services.iter().map(|service| service.to_string()).collect(),
         )?;
 
-        self.port_forwarder.destination_type = destination_types.get(idx).cloned();
+        self.port_forwarder.service = services.get(idx).cloned();
+        let default_port = self
+            .port_forwarder
+            .service
+            .as_ref()
+            .map(|service| service.default_port());
+        self.port_forwarder.host_port = default_port.map(|port| port.to_string());
+        self.port_forwarder.local_port = default_port.map(|port| {
+            if port < 1000 {
+                (port + 1000).to_string()
+            } else {
+                port.to_string()
+            }
+        });
         Ok(PortForwarderBuilder {
             port_forwarder: self.port_forwarder,
             selector: self.selector,
@@ -199,40 +222,82 @@ impl PortForwarderBuilder<DestinationType> {
 }
 
 impl PortForwarderBuilder<Destination> {
-    pub fn destination(mut self) -> Result<PortForwarderBuilder<Ready>> {
+    pub async fn destination(mut self) -> Result<PortForwarderBuilder<Ready>> {
         let destinations = match self
             .port_forwarder
-            .destination_type
+            .service
             .clone()
             .ok_or(eyre!("destination type is empty"))?
         {
-            DestinationTypes::ApplicationLoadBalancer(_, _) => {
-                vec!["123".to_string()]
-            }
-            DestinationTypes::Postgresql(_, _) => {
-                vec!["123".to_string()]
-            }
-            DestinationTypes::Redis(_, _) => {
-                vec!["123".to_string()]
-            }
-            DestinationTypes::Valkey(_, _) => {
-                vec!["123".to_string()]
-            }
+            Service::ApplicationLoadBalancer => self.application_load_balancers().await?,
+            Service::Postgresql => self.postgresql_servers()?,
+            Service::Redis => self.redis_servers()?,
+            Service::Valkey => self.valkey_servers()?,
         };
 
-        let (_, host_name) = self.selector.select("Select Host".into(), destinations)?;
-        self.port_forwarder.host_name = Some(host_name);
+        let (idx, _) = self.selector.select(
+            "Select Host".into(),
+            destinations
+                .iter()
+                .map(|(_, title)| title.to_owned())
+                .collect(),
+        )?;
+        self.port_forwarder.host_name = destinations
+            .get(idx)
+            .map(|(host_name, _)| host_name.to_owned());
+
         Ok(PortForwarderBuilder {
             port_forwarder: self.port_forwarder,
             selector: self.selector,
             marker: std::marker::PhantomData,
         })
     }
+
+    async fn application_load_balancers(&self) -> Result<Vec<(String, String)>> {
+        let profile_name = self
+            .port_forwarder
+            .profile_name
+            .as_ref()
+            .ok_or(eyre!("profile name is not set"))?;
+        let config = aws_config::defaults(BehaviorVersion::latest())
+            .profile_name(profile_name)
+            .load()
+            .await;
+        let client = aws_sdk_elasticloadbalancingv2::Client::new(&config);
+        let response = client.describe_load_balancers().send().await?;
+        Ok(response
+            .load_balancers
+            .unwrap_or(vec![])
+            .iter()
+            .filter_map(|lb| {
+                lb.dns_name
+                    .as_ref()
+                    .map(|dns_name| {
+                        (
+                            dns_name.to_owned(),
+                            lb.load_balancer_name.to_owned().unwrap_or(dns_name.clone()),
+                        )
+                    })
+                    .clone()
+            })
+            .collect())
+    }
+
+    fn postgresql_servers(&self) -> Result<Vec<(String, String)>> {
+        Ok(vec![])
+    }
+
+    fn redis_servers(&self) -> Result<Vec<(String, String)>> {
+        Ok(vec![])
+    }
+
+    fn valkey_servers(&self) -> Result<Vec<(String, String)>> {
+        Ok(vec![])
+    }
 }
 
 impl PortForwarderBuilder<Ready> {
     pub fn build(self) -> Result<Box<PortForwarder>> {
-        // TODO: check all options are some
         Ok(self.port_forwarder)
     }
 }
@@ -243,10 +308,11 @@ impl PortForwarder {
             port_forwarder: Box::new(PortForwarder {
                 profile_name: None,
                 instance_id: None,
-                destination_type: None,
+                service: None,
                 host_name: None,
                 host_port: None,
                 local_port: None,
+                read_only: true,
             }),
             selector,
             marker: std::marker::PhantomData,
@@ -254,6 +320,60 @@ impl PortForwarder {
     }
 
     pub fn run(self) -> Result<()> {
+        let profile_name = self
+            .profile_name
+            .as_ref()
+            .ok_or(eyre!("profile name is not set"))?;
+        let instance_id = self
+            .instance_id
+            .as_ref()
+            .ok_or(eyre!("instance id is not set"))?;
+        let host_name = self
+            .host_name
+            .as_ref()
+            .ok_or(eyre!("host name is not set"))?;
+        let host_port = self
+            .host_port
+            .as_ref()
+            .ok_or(eyre!("host port is not set"))?;
+        let local_port = self
+            .local_port
+            .as_ref()
+            .ok_or(eyre!("local port is not set"))?;
+        let command = format!(
+            r#"aws --profile {} ssm start-session --target {} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{{"host":["{}"],"portNumber":["{}"], "localPortNumber":["{}"]}}'"#,
+            profile_name, instance_id, host_name, host_port, local_port
+        );
+        ratatui::restore();
+        println!("Running:\r\n{}", command);
+        let mut child = Command::new("aws")
+            .arg("--profile")
+            .arg(profile_name)
+            .arg("ssm")
+            .arg("start-session")
+            .arg("--target")
+            .arg(instance_id)
+            .arg("--document-name")
+            .arg("AWS-StartPortForwardingSessionToRemoteHost")
+            .arg("--parameters")
+            .arg(format!(
+                r#"{{"host":["{}"],"portNumber":["{}"], "localPortNumber":["{}"]}}"#,
+                host_name, host_port, local_port
+            ))
+            .stderr(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?;
+
+        child.wait().map_err(|_| {
+                eyre!(
+                    r#"aws --profile {} ssm start-session --target {} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{{"host":["{}"],"portNumber":["{}"], "localPortNumber":["{}"]}}'"#,
+                    profile_name,
+                    instance_id,
+                    host_name,
+                    host_port,
+                    local_port
+                )
+            })?;
         Ok(())
     }
 }

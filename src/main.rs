@@ -15,7 +15,8 @@ async fn run() -> color_eyre::Result<()> {
         .instance()
         .await?
         .destination_type()?
-        .destination()?
+        .destination()
+        .await?
         .build()?
         .run();
     ratatui::restore();
@@ -26,7 +27,7 @@ async fn run() -> color_eyre::Result<()> {
 async fn main() -> color_eyre::Result<()> {
     if let Err(e) = run().await {
         ratatui::restore();
-        eprintln!("{}", e);
+        println!("{}{}", e, " ".repeat(80));
     }
     Ok(())
 }
