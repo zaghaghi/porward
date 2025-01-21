@@ -300,12 +300,16 @@ impl PortForwarderBuilder<Destination> {
             .unwrap_or(vec![])
             .iter()
             .filter_map(|db_cluster_endpoint| {
-                db_cluster_endpoint.endpoint
+                db_cluster_endpoint
+                    .endpoint
                     .as_ref()
                     .map(|dns_name| {
                         (
                             dns_name.to_owned(),
-                            db_cluster_endpoint.endpoint.to_owned().unwrap_or(dns_name.clone()),
+                            db_cluster_endpoint
+                                .endpoint
+                                .to_owned()
+                                .unwrap_or(dns_name.clone()),
                         )
                     })
                     .clone()
