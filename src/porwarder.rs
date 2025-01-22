@@ -230,7 +230,7 @@ impl PortForwarderBuilder<Destination> {
             .ok_or(eyre!("destination type is empty"))?
         {
             Service::ApplicationLoadBalancer => self.application_load_balancers().await?,
-            Service::Postgresql => self.postgresql_servers()?,
+            Service::Postgresql => self.postgresql_servers().await?,
             Service::Redis => self.redis_servers()?,
             Service::Valkey => self.valkey_servers()?,
         };
@@ -283,8 +283,38 @@ impl PortForwarderBuilder<Destination> {
             .collect())
     }
 
-    fn postgresql_servers(&self) -> Result<Vec<(String, String)>> {
-        Ok(vec![])
+    async fn postgresql_servers(&self) -> Result<Vec<(String, String)>> {
+        let profile_name = self
+            .port_forwarder
+            .profile_name
+            .as_ref()
+            .ok_or(eyre!("profile name is not set"))?;
+        let config = aws_config::defaults(BehaviorVersion::latest())
+            .profile_name(profile_name)
+            .load()
+            .await;
+        let client = aws_sdk_rds::Client::new(&config);
+        let response = client.describe_db_cluster_endpoints().send().await?;
+        Ok(response
+            .db_cluster_endpoints
+            .unwrap_or(vec![])
+            .iter()
+            .filter_map(|db_cluster_endpoint| {
+                db_cluster_endpoint
+                    .endpoint
+                    .as_ref()
+                    .map(|dns_name| {
+                        (
+                            dns_name.to_owned(),
+                            db_cluster_endpoint
+                                .endpoint
+                                .to_owned()
+                                .unwrap_or(dns_name.clone()),
+                        )
+                    })
+                    .clone()
+            })
+            .collect())
     }
 
     fn redis_servers(&self) -> Result<Vec<(String, String)>> {
@@ -365,7 +395,7 @@ impl PortForwarder {
             .spawn()?;
 
         child.wait().map_err(|_| {
-                eyre!(
+            eyre!(
                     r#"aws --profile {} ssm start-session --target {} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{{"host":["{}"],"portNumber":["{}"], "localPortNumber":["{}"]}}'"#,
                     profile_name,
                     instance_id,
@@ -373,7 +403,7 @@ impl PortForwarder {
                     host_port,
                     local_port
                 )
-            })?;
+        })?;
         Ok(())
     }
 }
