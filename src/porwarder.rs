@@ -231,7 +231,7 @@ impl PortForwarderBuilder<Destination> {
         {
             Service::ApplicationLoadBalancer => self.application_load_balancers().await?,
             Service::Postgresql => self.postgresql_servers().await?,
-            Service::Redis => self.redis_servers()?,
+            Service::Redis => self.redis_servers().await?,
             Service::Valkey => self.valkey_servers()?,
         };
 
@@ -317,8 +317,36 @@ impl PortForwarderBuilder<Destination> {
             .collect())
     }
 
-    fn redis_servers(&self) -> Result<Vec<(String, String)>> {
-        Ok(vec![])
+    async fn redis_servers(&self) -> Result<Vec<(String, String)>> {
+        let profile_name = self
+            .port_forwarder
+            .profile_name
+            .as_ref()
+            .ok_or(eyre!("profile name is not set"))?;
+        let config = aws_config::defaults(BehaviorVersion::latest())
+            .profile_name(profile_name)
+            .load()
+            .await;
+        let client = aws_sdk_elasticache::Client::new(&config);
+        let response = client
+            .describe_cache_clusters()
+            .show_cache_node_info(true)
+            .send()
+            .await?;
+        Ok(response
+            .cache_clusters
+            .unwrap_or(vec![])
+            .iter()
+            .filter_map(|cluster| {
+                cluster.cache_nodes.as_ref().map(|cache_node| {
+                    let endpoint = cache_node.first().unwrap().endpoint.clone().unwrap();
+                    (
+                        endpoint.address.clone().unwrap().to_string(),
+                        endpoint.address.unwrap().to_string(),
+                    )
+                })
+            })
+            .collect())
     }
 
     fn valkey_servers(&self) -> Result<Vec<(String, String)>> {
