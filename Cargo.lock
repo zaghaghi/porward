@@ -122,9 +122,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-elasticache"
-version = "1.61.0"
+version = "1.62.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bf9f74ccf9d4a629b98fd79efa01784edcf6760cf7bca8f52786e1318750286"
+checksum = "92495f4a39d78f86f8e8031f0b98232d4fffaf56aa51cdc244aedae7314476b4"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
